@@ -8,6 +8,8 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let detail = NSMenuItem()
     private let toggle = NSMenuItem()
     private let login = NSMenuItem()
+    private let killSwitch = NSMenuItem()
+    private let resumeInternet = NSMenuItem()
     private lazy var session = TunnelSession { [weak self] status in self?.render(status) }
     private var state = "disconnected"
     private var pending: Task<Void, Never>?
@@ -30,8 +32,18 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         login.target = self
         login.action = #selector(toggleLogin)
         settingsMenu.addItem(login)
+        killSwitch.title = "Kill Switch"
+        killSwitch.toolTip = "Block Internet traffic if the tunnel drops. Disconnect or quit from this menu to use your normal connection."
+        killSwitch.target = self
+        killSwitch.action = #selector(toggleKillSwitch)
+        settingsMenu.addItem(killSwitch)
+        resumeInternet.title = "Resume Ordinary Internet"
+        resumeInternet.target = self
+        resumeInternet.action = #selector(manualDisconnect)
+        settingsMenu.addItem(resumeInternet)
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit OpenWARP", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Quit OpenWARP", action: #selector(quitApp), keyEquivalent: "q")
+        quit.target = self
         menu.addItem(quit)
         item.menu = menu
         render(TunnelStatus(state: state, detail: ""))
@@ -39,6 +51,9 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        let mode = KillSwitch.mode
+        killSwitch.state = mode == nil ? .mixed : mode == .off ? .off : .on
+        resumeInternet.isHidden = mode != .armed || session.active
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
@@ -49,10 +64,41 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleConnection() {
         if session.active || pending != nil {
-            pending?.cancel()
-            session.disconnect()
-            render(TunnelStatus(state: "disconnected", detail: ""))
+            manualDisconnect()
         } else { start() }
+    }
+
+    private func pauseProtection() -> Bool {
+        do {
+            if KillSwitch.mode != .off { try KillSwitch.apply("pause") }
+            return true
+        } catch {
+            NSAlert(error: error).runModal()
+            return false
+        }
+    }
+
+    @objc private func manualDisconnect() {
+        guard pauseProtection() else { return }
+        pending?.cancel()
+        session.disconnect()
+        render(TunnelStatus(state: "disconnected", detail: ""))
+    }
+
+    @objc private func quitApp() {
+        if pauseProtection() { NSApp.terminate(nil) }
+    }
+
+    @objc private func toggleKillSwitch() {
+        do {
+            if KillSwitch.mode == .off {
+                try KillSwitch.apply(session.active ? "enable-active" : "enable")
+            } else {
+                try KillSwitch.apply("disable")
+            }
+        } catch {
+            NSAlert(error: error).runModal()
+        }
     }
 
     private func start() {
@@ -77,6 +123,7 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do {
                 let id = try await Enrollment.loadOrRegister()
                 try Task.checkCancellation()
+                if KillSwitch.mode != .off { try KillSwitch.apply("arm") }
                 try session.connect(identity: id)
             } catch {
                 if !Task.isCancelled { render(TunnelStatus(state: "error", detail: error.localizedDescription)) }
@@ -109,7 +156,7 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if state == "error" {
             let alert = NSAlert()
             alert.messageText = "OpenWARP could not connect"
-            alert.informativeText = status.detail
+            alert.informativeText = status.detail + (KillSwitch.mode == .armed ? "\n\nThe kill switch is armed. Reconnect or choose Settings > Resume Ordinary Internet." : "")
             alert.runModal()
         }
     }

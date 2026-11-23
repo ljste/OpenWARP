@@ -20,7 +20,7 @@ python3 script/notices.py "$app/Contents/Resources/ThirdPartyNotices.txt" "$targ
 codesign --force --sign - --identifier io.github.ljste.openwarp "$app"
 ditto "$app" "$stage/root/Applications/OpenWARP.app"
 install -m 755 "$CARGO_TARGET_DIR/release/openwarp-tunnel" "$stage/root/Library/PrivilegedHelperTools/io.github.ljste.openwarp.tunnel"
-install -m 644 Packaging/io.github.ljste.openwarp.tunnel.plist "$stage/root/Library/LaunchDaemons/"
+install -m 644 Packaging/io.github.ljste.openwarp.*.plist "$stage/root/Library/LaunchDaemons/"
 pkgbuild --analyze --root "$stage/root" "$stage/components.plist"
 plutil -replace 0.BundleIsRelocatable -bool NO "$stage/components.plist"
 pkgbuild --root "$stage/root" --component-plist "$stage/components.plist" --scripts Packaging/scripts --ownership recommended --identifier io.github.ljste.openwarp.pkg --version "$(plutil -extract CFBundleShortVersionString raw Packaging/Info.plist)" --install-location / "dist/OpenWARP-$arch.pkg"

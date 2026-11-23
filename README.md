@@ -10,7 +10,29 @@ On one M2 Pro Mac, the connected menu used about 19 MB and the helper used 3.3 M
 2. Disconnect any active VPN, then open **OpenWARP** in Applications. Click the shield in the menu bar and choose **Connect**. On first use, review the Cloudflare application terms and choose **Agree and Connect** to register a device identity.
 3. Wait for **Connected**. OpenWARP tests DNS inside the tunnel, checks macOS routing and resolver selection, and requires Cloudflare to confirm WARP egress over both IPv4 and IPv6.
 
-Choose **Settings > Connect at Login** from the shield menu to start OpenWARP and connect automatically when you log in. Quitting releases the tunnel. Installing the helper requires administrator approval. The helper accepts local connections from members of the Mac's admin group.
+Choose **Settings > Connect at Login** from the shield menu to start OpenWARP and connect automatically when you log in. Choosing **Disconnect** or **Quit OpenWARP** in the menu releases the tunnel and allows ordinary networking. Installing the helper requires administrator approval. The helper accepts local connections from members of the Mac's admin group.
+
+## Kill switch
+
+**Settings > Kill Switch** is off on a fresh installation. Enable it while connected to arm it immediately, or while disconnected to arm it on the next connection. The setting applies to the whole Mac. Turning it on can interrupt existing connections because OpenWARP clears existing packet-filter states when arming.
+
+| Event | With the kill switch enabled |
+| --- | --- |
+| Tunnel interruption, app crash, or helper crash | Ordinary IPv4, IPv6, and DNS traffic stays blocked. The tunnel can reconnect through its registered Cloudflare endpoints. |
+| Choose **Disconnect** or **Quit OpenWARP** in the menu | Ordinary Internet access resumes. The switch stays checked and arms again on the next connection. |
+| Restart the Mac while armed | The system launch daemon reapplies protection at startup, independently of login. The switch stays enabled across reboots. |
+| Restart after a deliberate disconnect | Ordinary Internet access continues until the next connection, including a connection started by **Connect at Login**. |
+| Want Internet access after a failure | Select **Settings > Resume Ordinary Internet** to pause protection, or uncheck **Kill Switch** to turn it off. |
+
+The switch uses a dedicated anchor in the standard macOS packet filter (PF). While armed it also blocks ordinary LAN and captive-portal traffic. Exceptions cover loopback, the tunnel, UDP to the registered WARP endpoints for the root helper, and DHCP and IPv6 neighbor discovery for network setup. Boot-time protection starts when launchd restores the filter. Traffic before that point, external changes to PF, and third-party or customized firewall configurations are outside its guarantee.
+
+For recovery from Terminal, a local Mac administrator can turn the setting off using the installed control service, even while the menu app is closed.
+
+```sh
+/Library/PrivilegedHelperTools/io.github.ljste.openwarp.tunnel kill-switch disable
+```
+
+If the control service is unavailable, run the same command with `sudo` to clear the OpenWARP filter directly.
 
 ## What the tunnel covers
 
@@ -18,7 +40,7 @@ OpenWARP implements **Traffic and DNS (UDP)** using MASQUE over HTTP/3 on UDP po
 
 The tunnel captures ordinary Internet routes and sets the default macOS resolver to Cloudflare. The two tunnel endpoint addresses use the physical network. Local network routes, more-specific routes, and domain-specific DNS settings can take precedence. The first registration uses the existing network connection.
 
-OpenWARP retries a lost connection while its helper is running. When the app quits or the helper exits, macOS resumes ordinary networking. There is no persistent kill switch. This preview supports consumer UDP mode only. Enterprise Zero Trust enrollment, DNS-only modes, WARP+ account management, and TCP fallback are outside its scope. OpenWARP is an independent project and has no affiliation with Cloudflare.
+OpenWARP retries a lost connection while its helper is running. With the kill switch off, an app or helper exit returns the Mac to ordinary networking. This preview supports consumer UDP mode only. Enterprise Zero Trust enrollment, DNS-only modes, WARP+ account management, and TCP fallback are outside its scope. OpenWARP is an independent project and has no affiliation with Cloudflare.
 
 ## Build from source
 
@@ -41,10 +63,12 @@ The check reads the active tunnel interface and DNS configuration, inspects IPv4
 
 ## Uninstall
 
-Turn off **Settings > Connect at Login**, quit OpenWARP, then remove the helper and its installer receipt.
+Uncheck **Settings > Kill Switch** and **Settings > Connect at Login**, then quit OpenWARP. Remove the services and their installer receipt.
 
 ```sh
+sudo launchctl bootout system/io.github.ljste.openwarp.guard
 sudo launchctl bootout system/io.github.ljste.openwarp.tunnel
+sudo rm -f /Library/LaunchDaemons/io.github.ljste.openwarp.guard.plist
 sudo rm -f /Library/LaunchDaemons/io.github.ljste.openwarp.tunnel.plist
 sudo rm -f /Library/PrivilegedHelperTools/io.github.ljste.openwarp.tunnel
 sudo pkgutil --forget io.github.ljste.openwarp.pkg

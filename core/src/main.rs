@@ -1,3 +1,4 @@
+mod guard;
 mod identity;
 mod network;
 mod probe;
@@ -151,10 +152,12 @@ fn serve(peer: &mut UnixStream) -> Result<()> {
     id.validate()?;
     let fd = peer.as_raw_fd();
     report(peer, "connecting", "Opening WARP tunnel")?;
+    guard::Link::update(&id, None)?;
     Network::check_conflicts()?;
     let mut tunnel = Tunnel::dial(&id, fd)?;
     probe::verify(&mut tunnel, &id, fd)?;
     let mut network = Network::prepare(&id)?;
+    guard::Link::update(&id, Some(&network.name))?;
     verify_interface(
         &mut tunnel,
         &network,
@@ -202,7 +205,7 @@ fn serve(peer: &mut UnixStream) -> Result<()> {
     }
 }
 
-fn activate() -> Result<()> {
+fn listener() -> Result<UnixListener> {
     let mut fds = std::ptr::null_mut();
     let mut count = 0;
     let error = unsafe { launch_activate_socket(c"Control".as_ptr(), &mut fds, &mut count) };
@@ -213,7 +216,12 @@ fn activate() -> Result<()> {
     ensure!(count == 1, "Expected one launchd socket");
     let listener = unsafe { UnixListener::from_raw_fd(*fds) };
     unsafe { libc::free(fds.cast()) };
-    let (mut peer, _) = listener.accept()?;
+    Ok(listener)
+}
+
+fn activate() -> Result<()> {
+    guard::restore()?;
+    let (mut peer, _) = listener()?.accept()?;
     if let Err(error) = serve(&mut peer) {
         let _ = report(&mut peer, "error", &format!("{error:#}"));
     }
@@ -224,6 +232,8 @@ fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [] => activate(),
+        [cmd] if cmd == "guard-control" => guard::serve(listener()?.accept()?.0),
+        [cmd, action] if cmd == "kill-switch" => guard::request(action),
         [command, path] if command == "probe-interface" => {
             let data = fs::read(path)?;
             let id = serde_json::from_slice(&data)?;

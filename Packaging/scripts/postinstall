@@ -1,4 +1,12 @@
 #!/bin/sh
 set -eu
-/bin/launchctl bootout system/io.github.ljste.openwarp.tunnel 2>/dev/null || true
-/bin/launchctl bootstrap system /Library/LaunchDaemons/io.github.ljste.openwarp.tunnel.plist
+for service in io.github.ljste.openwarp.guard io.github.ljste.openwarp.tunnel; do
+    /bin/launchctl bootout "system/$service" 2>/dev/null || true
+    attempts=0
+    until /bin/launchctl bootstrap system "/Library/LaunchDaemons/$service.plist"; do
+        /bin/launchctl print "system/$service" >/dev/null 2>&1 && break
+        attempts=$((attempts + 1))
+        [ "$attempts" -lt 6 ] || exit 1
+        /bin/sleep 1
+    done
+done
