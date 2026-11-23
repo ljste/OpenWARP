@@ -22,14 +22,17 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toggle.target = self
         toggle.action = #selector(toggleConnection)
         menu.addItem(toggle)
+        let settingsMenu = NSMenu(title: "Settings")
+        settingsMenu.delegate = self
+        let settings = menu.addItem(withTitle: settingsMenu.title, action: nil, keyEquivalent: "")
+        settings.submenu = settingsMenu
         login.title = "Connect at Login"
         login.target = self
         login.action = #selector(toggleLogin)
-        menu.addItem(login)
+        settingsMenu.addItem(login)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit OpenWARP", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
-        menu.delegate = self
         item.menu = menu
         render(TunnelStatus(state: state, detail: ""))
         if SMAppService.mainApp.status == .enabled || CommandLine.arguments.contains("--connect") { start() }

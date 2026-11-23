@@ -10,7 +10,7 @@ On one M2 Pro Mac, the connected menu used about 19 MB and the helper used 3.3 M
 2. Disconnect any active VPN, then open **OpenWARP** in Applications. Click the shield in the menu bar and choose **Connect**. On first use, review the Cloudflare application terms and choose **Agree and Connect** to register a device identity.
 3. Wait for **Connected**. OpenWARP tests DNS inside the tunnel, checks macOS routing and resolver selection, and requires Cloudflare to confirm WARP egress over both IPv4 and IPv6.
 
-The menu offers **Disconnect** and optional **Connect at Login**. Quitting releases the tunnel. Installing the helper requires administrator approval. The helper accepts local connections from members of the Mac's admin group.
+Choose **Settings > Connect at Login** from the shield menu to start OpenWARP and connect automatically when you log in. Quitting releases the tunnel. Installing the helper requires administrator approval. The helper accepts local connections from members of the Mac's admin group.
 
 ## What the tunnel covers
 
@@ -41,7 +41,7 @@ The check reads the active tunnel interface and DNS configuration, inspects IPv4
 
 ## Uninstall
 
-Turn off **Connect at Login**, quit OpenWARP, then remove the helper and its installer receipt.
+Turn off **Settings > Connect at Login**, quit OpenWARP, then remove the helper and its installer receipt.
 
 ```sh
 sudo launchctl bootout system/io.github.ljste.openwarp.tunnel
