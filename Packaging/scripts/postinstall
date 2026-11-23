@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+/bin/launchctl bootout system/io.github.ljste.openwarp.tunnel 2>/dev/null || true
+/bin/launchctl bootstrap system /Library/LaunchDaemons/io.github.ljste.openwarp.tunnel.plist
