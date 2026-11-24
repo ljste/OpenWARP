@@ -24,6 +24,7 @@ class PortalServer(socketserver.ThreadingTCPServer):
     key: str
     signed_in: threading.Event
     unavailable = False
+    portal_unreachable = False
 
 
 class Portal(socketserver.StreamRequestHandler):
@@ -47,6 +48,9 @@ class Portal(socketserver.StreamRequestHandler):
         assert read_exact(self.rfile, 4) == bytes([5, 1, 0, 3])
         host = read_exact(self.rfile, read_exact(self.rfile, 1)[0])
         assert int.from_bytes(read_exact(self.rfile, 2), 'big') == 80
+        if host == b'portal.example.test' and server.portal_unreachable:
+            self.wfile.write(bytes([5, 4, 0, 1, 0, 0, 0, 0, 0, 0]))
+            return
         self.wfile.write(bytes([5, 0, 0, 1, 0, 0, 0, 0, 0, 0]))
         line = self.rfile.readline(8192)
         while self.rfile.readline(8192) not in (b'\r\n', b'\n', b''):
@@ -107,9 +111,13 @@ def main() -> None:
                 assert run(['--detect']) == 2, 'Open Wi-Fi should exit without creating a window'
                 proxy.unavailable = True
                 assert run(['--detect']) == 3, 'An outage should stay quiet'
+                proxy.unavailable = False
+                proxy.signed_in.clear()
+                proxy.portal_unreachable = True
+                assert run(['--detect']) == 4, 'A failed login page should offer manual sign-in'
             finally:
                 proxy.shutdown()
-    print('Verified manual and automatic sign-in, redirect, form submission, and quiet exits on open Wi-Fi and a network error.')
+    print('Verified sign-in, open Wi-Fi, inconclusive discovery, and an unreachable login page.')
 
 
 if __name__ == '__main__':

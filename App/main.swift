@@ -7,6 +7,7 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let heading = NSMenuItem()
     private let detail = NSMenuItem()
     private let toggle = NSMenuItem()
+    private let manualSignIn = NSMenuItem(title: "Sign In to Wi-Fi…", action: #selector(signInToWifi), keyEquivalent: "")
     private let login = NSMenuItem()
     private let killSwitch = NSMenuItem()
     private let resumeInternet = NSMenuItem()
@@ -32,6 +33,9 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toggle.target = self
         toggle.action = #selector(toggleConnection)
         menu.addItem(toggle)
+        manualSignIn.target = self
+        manualSignIn.isHidden = true
+        menu.addItem(manualSignIn)
         let settingsMenu = NSMenu(title: "Settings")
         settingsMenu.delegate = self
         let settings = menu.addItem(withTitle: settingsMenu.title, action: nil, keyEquivalent: "")
@@ -45,8 +49,6 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         killSwitch.target = self
         killSwitch.action = #selector(toggleKillSwitch)
         settingsMenu.addItem(killSwitch)
-        let wifi = settingsMenu.addItem(withTitle: "Sign In to Wi-Fi…", action: #selector(signInToWifi), keyEquivalent: "")
-        wifi.target = self
         resumeInternet.title = "Resume Ordinary Internet"
         resumeInternet.target = self
         resumeInternet.action = #selector(manualDisconnect)
@@ -96,6 +98,7 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         wifi.stop()
         cancelCheck()
         dismissFailure()
+        manualSignIn.isHidden = true
         stopWifiLogin()
         pending?.cancel()
         session.disconnect()
@@ -132,16 +135,18 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func wifiChanged(_ joined: Bool) {
         cancelCheck()
         stopWifiLogin()
+        manualSignIn.isHidden = true
+        dismissFailure()
         checkedFailure = false
         retryOnOpen = state == "error"
         if joined {
-            dismissFailure()
             scheduleCheck(attempt: 0)
         }
     }
 
     private func scheduleCheck(attempt: Int) {
         guard wifi.joined, scheduledCheck == nil, loginProcess == nil else { return }
+        manualSignIn.isHidden = true
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.scheduledCheck = nil
@@ -152,12 +157,15 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func signInToWifi() {
-        cancelCheck()
-        if let current = loginProcess, current.isRunning {
-            try? loginInput?.write(contentsOf: Data([1]))
-            return
-        }
+        guard wifi.joined, !manualSignIn.isHidden, loginProcess == nil else { return }
+        manualSignIn.isHidden = true
         launchWifiLogin(detect: false, attempt: 0)
+    }
+
+    private func offerManualSignIn() {
+        guard wifi.joined else { return }
+        checkedFailure = true
+        manualSignIn.isHidden = false
     }
 
     private func launchWifiLogin(detect: Bool, attempt: Int) {
@@ -171,27 +179,32 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async {
                 guard let self, self.loginProcess === finished else { return }
                 self.stopWifiLogin()
-                let result = WiFiLoginResult(rawValue: finished.terminationStatus)
+                let result = finished.terminationReason == .exit
+                    ? WiFiLoginResult(rawValue: finished.terminationStatus) ?? .failed
+                    : .failed
                 if result == .cancelled && detect { self.checkedFailure = true }
                 if detect && result == .inconclusive && attempt < 2 {
                     self.scheduleCheck(attempt: attempt + 1)
-                } else if reconnect && self.state != "connected" && (result == .signedIn || (result == .alreadyOpen && self.retryOnOpen)) {
+                    return
+                }
+                if result == .failed || result == .inconclusive || (!detect && result == .cancelled) {
+                    self.offerManualSignIn()
+                }
+                if reconnect && self.state != "connected" && (result == .signedIn || (result == .alreadyOpen && self.retryOnOpen)) {
                     self.retryOnOpen = false
                     self.session.disconnect()
                     self.start()
-                } else if self.state == "error" && (result == .alreadyOpen || result == .inconclusive) {
+                } else if detect && self.state == "error" && result != .cancelled {
                     self.showFailure()
                 }
             }
         }
         do {
-            guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
-                throw OpenWARPError("Could not set up Wi-Fi sign-in.")
-            }
             try process.run()
             loginProcess = process
             loginInput = input.fileHandleForWriting
         } catch {
+            offerManualSignIn()
             if !detect { NSAlert(error: error).runModal() }
             else if state == "error" { showFailure() }
         }
@@ -254,6 +267,7 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if state == "connected" {
             checkedFailure = false
             retryOnOpen = false
+            if previous != state { manualSignIn.isHidden = true }
             dismissFailure()
         } else if state == "error" || (state == "reconnecting" && previous == "connected") {
             failureDetail = status.detail
@@ -278,7 +292,7 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.messageText = "OpenWARP could not connect"
         alert.informativeText = failureDetail + (KillSwitch.mode == .armed ? "\n\nThe kill switch is armed. Reconnect or choose Settings > Resume Ordinary Internet." : "")
         alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Sign In to Wi-Fi…")
+        if !manualSignIn.isHidden { alert.addButton(withTitle: manualSignIn.title) }
         if alert.runModal() == .alertSecondButtonReturn { signInToWifi() }
     }
 

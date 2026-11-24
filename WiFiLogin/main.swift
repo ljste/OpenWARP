@@ -67,25 +67,16 @@ private struct Captivity: Decodable {
     private var browser: WKWebView?
     private let origin = NSTextField(labelWithString: "Checking Wi-Fi…")
     private let probeDelegate = ProbeDelegate()
-    private var automatic = CommandLine.arguments.contains("--detect")
-    private var proxy: ProxyConfiguration?
+    private let automatic = CommandLine.arguments.contains("--detect")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        FileHandle.standardInput.readabilityHandler = { input in
-            let message = input.availableData
-            DispatchQueue.main.async {
-                if message.isEmpty { exit(WiFiLoginResult.cancelled.rawValue) }
-                self.automatic = false
-                if let proxy = self.proxy { self.showWindow(proxy) }
-            }
-        }
+        FileHandle.standardInput.readabilityHandler = { _ in exit(WiFiLoginResult.cancelled.rawValue) }
         do {
             let (socket, config) = try Lease.open()
             lease = socket
             var proxy = ProxyConfiguration(socksv5Proxy: .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: config.port)!))
             proxy.applyCredential(username: "openwarp", password: config.secret)
             proxy.allowFailover = false
-            self.proxy = proxy
             if !automatic { showWindow(proxy) }
             let configuration = URLSessionConfiguration.ephemeral
             configuration.proxyConfigurations = [proxy]
@@ -96,22 +87,19 @@ private struct Captivity: Decodable {
             let session = URLSession(configuration: configuration, delegate: probeDelegate, delegateQueue: nil)
             checks = Task { await monitor(proxy, session: session, api: URL(string: config.api)) }
             socket.readabilityHandler = { _ in
-                DispatchQueue.main.async { exit(WiFiLoginResult.cancelled.rawValue) }
+                DispatchQueue.main.async {
+                    exit((self.browser == nil ? WiFiLoginResult.inconclusive : .failed).rawValue)
+                }
             }
         } catch {
             if automatic { exit(WiFiLoginResult.inconclusive.rawValue) }
             NSApp.activate(ignoringOtherApps: true)
             NSAlert(error: error).runModal()
-            exit(WiFiLoginResult.cancelled.rawValue)
+            exit(WiFiLoginResult.failed.rawValue)
         }
     }
 
     private func showWindow(_ proxy: ProxyConfiguration) {
-        if let window {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
         let store = WKWebsiteDataStore.nonPersistent()
         store.proxyConfigurations = [proxy]
         let webConfig = WKWebViewConfiguration()
@@ -204,7 +192,19 @@ private struct Captivity: Decodable {
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        if (error as NSError).code != NSURLErrorCancelled { origin.stringValue = error.localizedDescription }
+        navigationFailed(error as NSError)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        navigationFailed(error as NSError)
+    }
+
+    private func navigationFailed(_ error: NSError) {
+        if error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled { return }
+        // WebKit reports a policy-cancelled navigation with its legacy error 102.
+        if error.domain == "WebKitErrorDomain" && error.code == 102 { return }
+        if automatic { exit(WiFiLoginResult.failed.rawValue) }
+        origin.stringValue = error.localizedDescription
     }
 
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo,
