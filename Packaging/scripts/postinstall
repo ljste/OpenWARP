@@ -3,8 +3,31 @@ set -eu
 if ! /usr/bin/dscl . -read /Groups/_openwarpportal PrimaryGroupID >/dev/null 2>&1; then
     /usr/sbin/dseditgroup -o create -n . -r "OpenWARP Wi-Fi sign-in" _openwarpportal
 fi
-for service in io.github.ljste.openwarp.portal io.github.ljste.openwarp.guard io.github.ljste.openwarp.tunnel; do
-    /bin/launchctl bootout "system/$service" 2>/dev/null || true
+
+bootout_if_loaded() {
+    if /bin/launchctl print "system/$1" >/dev/null 2>&1; then
+        /bin/launchctl bootout "system/$1" || ! /bin/launchctl print "system/$1" >/dev/null 2>&1
+    fi
+}
+
+overrides=$(/bin/launchctl print-disabled system)
+override_for() {
+    printf '%s\n' "$overrides" | /usr/bin/awk -F '"' -v label="$1" '$2 == label { split($3, fields, " "); print fields[2] }'
+}
+
+for role in Portal Guard Tunnel; do
+    service="OpenWARP $role"
+    legacy="io.github.ljste.openwarp.$(printf '%s' "$role" | /usr/bin/tr A-Z a-z)"
+    bootout_if_loaded "$legacy"
+    /bin/rm -f "/Library/LaunchDaemons/$legacy.plist"
+    bootout_if_loaded "$service"
+    override=$(override_for "$service")
+    if [ -z "$override" ] && [ "$(override_for "$legacy")" = disabled ]; then
+        /bin/launchctl disable "system/$service"
+        override=disabled
+    fi
+    [ "$override" != disabled ] || continue
+
     attempts=0
     until /bin/launchctl bootstrap system "/Library/LaunchDaemons/$service.plist"; do
         /bin/launchctl print "system/$service" >/dev/null 2>&1 && break
@@ -13,3 +36,4 @@ for service in io.github.ljste.openwarp.portal io.github.ljste.openwarp.guard io
         /bin/sleep 1
     done
 done
+/bin/rm -f /Library/PrivilegedHelperTools/io.github.ljste.openwarp.tunnel

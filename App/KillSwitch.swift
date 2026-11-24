@@ -18,7 +18,7 @@ enum KillSwitch {
 
     static func apply(_ action: String) throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/Library/PrivilegedHelperTools/io.github.ljste.openwarp.tunnel")
+        process.executableURL = URL(fileURLWithPath: "/Library/PrivilegedHelperTools/OpenWARP Guard")
         process.arguments = ["kill-switch", action]
         let errors = Pipe()
         process.standardError = errors

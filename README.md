@@ -39,7 +39,7 @@ The switch uses a dedicated anchor in the standard macOS packet filter (PF). Whi
 For recovery from Terminal, a local Mac administrator can turn the setting off using the installed control service, even while the menu app is closed.
 
 ```sh
-/Library/PrivilegedHelperTools/io.github.ljste.openwarp.tunnel kill-switch disable
+"/Library/PrivilegedHelperTools/OpenWARP Guard" kill-switch disable
 ```
 
 If the control service is unavailable, run the same command with `sudo` to clear the OpenWARP filter directly.
@@ -61,7 +61,7 @@ Install the Xcode Command Line Tools, a current stable Rust toolchain with Cargo
 open "dist/OpenWARP-$(uname -m).pkg"
 ```
 
-The installer includes the menu-bar app, a socket-activated launchd helper, and dependency notices. Installing the package places the app in Applications. The QUIC implementation is Cloudflare's [quiche](https://github.com/cloudflare/quiche). The [usque project](https://github.com/Diniboy1123/usque) documents the consumer MASQUE protocol.
+The installer places the menu-bar app in Applications and registers three background services. **OpenWARP Tunnel** carries VPN traffic, **OpenWARP Guard** manages the kill switch, and **OpenWARP Portal** handles Wi-Fi sign-in. The three names share one helper executable. The QUIC implementation is Cloudflare's [quiche](https://github.com/cloudflare/quiche). The [usque project](https://github.com/Diniboy1123/usque) documents the consumer MASQUE protocol.
 
 To check the current connection from the repository, run
 
@@ -76,13 +76,10 @@ The check reads the active tunnel interface and DNS configuration, inspects IPv4
 Uncheck **Settings > Kill Switch** and **Settings > Connect at Login**, then quit OpenWARP. Remove the services and their installer receipt.
 
 ```sh
-sudo launchctl bootout system/io.github.ljste.openwarp.portal
-sudo launchctl bootout system/io.github.ljste.openwarp.guard
-sudo launchctl bootout system/io.github.ljste.openwarp.tunnel
-sudo rm -f /Library/LaunchDaemons/io.github.ljste.openwarp.portal.plist
-sudo rm -f /Library/LaunchDaemons/io.github.ljste.openwarp.guard.plist
-sudo rm -f /Library/LaunchDaemons/io.github.ljste.openwarp.tunnel.plist
-sudo rm -f /Library/PrivilegedHelperTools/io.github.ljste.openwarp.tunnel
+for service in "OpenWARP Portal" "OpenWARP Guard" "OpenWARP Tunnel"; do
+    sudo launchctl bootout "system/$service"
+    sudo rm -f "/Library/LaunchDaemons/$service.plist" "/Library/PrivilegedHelperTools/$service"
+done
 sudo dseditgroup -o delete -n . _openwarpportal
 sudo pkgutil --forget io.github.ljste.openwarp.pkg
 ```
