@@ -67,43 +67,26 @@ private struct Captivity: Decodable {
     private var browser: WKWebView?
     private let origin = NSTextField(labelWithString: "Checking Wi-Fi…")
     private let probeDelegate = ProbeDelegate()
+    private var automatic = CommandLine.arguments.contains("--detect")
+    private var proxy: ProxyConfiguration?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        FileHandle.standardInput.readabilityHandler = { _ in DispatchQueue.main.async { exit(1) } }
+        FileHandle.standardInput.readabilityHandler = { input in
+            let message = input.availableData
+            DispatchQueue.main.async {
+                if message.isEmpty { exit(WiFiLoginResult.cancelled.rawValue) }
+                self.automatic = false
+                if let proxy = self.proxy { self.showWindow(proxy) }
+            }
+        }
         do {
             let (socket, config) = try Lease.open()
             lease = socket
             var proxy = ProxyConfiguration(socksv5Proxy: .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: config.port)!))
             proxy.applyCredential(username: "openwarp", password: config.secret)
             proxy.allowFailover = false
-            let store = WKWebsiteDataStore.nonPersistent()
-            store.proxyConfigurations = [proxy]
-            let webConfig = WKWebViewConfiguration()
-            webConfig.websiteDataStore = store
-            let web = WKWebView(frame: .zero, configuration: webConfig)
-            web.navigationDelegate = self
-            web.uiDelegate = self
-            browser = web
-            let done = NSButton(title: "Done", target: self, action: #selector(doneClicked))
-            origin.lineBreakMode = .byTruncatingTail
-            let header = NSStackView(views: [origin, done])
-            header.orientation = .horizontal
-            header.distribution = .fill
-            let content = NSView()
-            for view in [header, web] { view.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(view) }
-            NSLayoutConstraint.activate([
-                header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14),
-                header.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), web.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 8),
-                web.leadingAnchor.constraint(equalTo: content.leadingAnchor), web.trailingAnchor.constraint(equalTo: content.trailingAnchor), web.bottomAnchor.constraint(equalTo: content.bottomAnchor)
-            ])
-            let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-            panel.title = "OpenWARP Wi-Fi Sign-In"
-            panel.contentView = content
-            panel.delegate = self
-            window = panel
-            panel.center()
-            panel.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            self.proxy = proxy
+            if !automatic { showWindow(proxy) }
             let configuration = URLSessionConfiguration.ephemeral
             configuration.proxyConfigurations = [proxy]
             configuration.timeoutIntervalForRequest = 5
@@ -111,15 +94,52 @@ private struct Captivity: Decodable {
             configuration.urlCache = nil
             configuration.httpShouldSetCookies = false
             let session = URLSession(configuration: configuration, delegate: probeDelegate, delegateQueue: nil)
-            checks = Task { await monitor(web, session: session, api: URL(string: config.api)) }
+            checks = Task { await monitor(proxy, session: session, api: URL(string: config.api)) }
             socket.readabilityHandler = { _ in
-                DispatchQueue.main.async { exit(1) }
+                DispatchQueue.main.async { exit(WiFiLoginResult.cancelled.rawValue) }
             }
         } catch {
+            if automatic { exit(WiFiLoginResult.inconclusive.rawValue) }
             NSApp.activate(ignoringOtherApps: true)
             NSAlert(error: error).runModal()
-            exit(1)
+            exit(WiFiLoginResult.cancelled.rawValue)
         }
+    }
+
+    private func showWindow(_ proxy: ProxyConfiguration) {
+        if let window {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let store = WKWebsiteDataStore.nonPersistent()
+        store.proxyConfigurations = [proxy]
+        let webConfig = WKWebViewConfiguration()
+        webConfig.websiteDataStore = store
+        let web = WKWebView(frame: .zero, configuration: webConfig)
+        web.navigationDelegate = self
+        web.uiDelegate = self
+        browser = web
+        let done = NSButton(title: "Done", target: self, action: #selector(doneClicked))
+        origin.lineBreakMode = .byTruncatingTail
+        let header = NSStackView(views: [origin, done])
+        header.orientation = .horizontal
+        header.distribution = .fill
+        let content = NSView()
+        for view in [header, web] { view.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(view) }
+        NSLayoutConstraint.activate([
+            header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14),
+            header.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), web.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 8),
+            web.leadingAnchor.constraint(equalTo: content.leadingAnchor), web.trailingAnchor.constraint(equalTo: content.trailingAnchor), web.bottomAnchor.constraint(equalTo: content.bottomAnchor)
+        ])
+        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        panel.title = "OpenWARP Wi-Fi Sign-In"
+        panel.contentView = content
+        panel.delegate = self
+        window = panel
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func response(_ request: URLRequest, session: URLSession) async throws -> (HTTPURLResponse, Data) {
@@ -134,7 +154,7 @@ private struct Captivity: Decodable {
         return (http, body)
     }
 
-    private func monitor(_ web: WKWebView, session: URLSession, api: URL?) async {
+    private func monitor(_ proxy: ProxyConfiguration, session: URLSession, api: URL?) async {
         defer { session.invalidateAndCancel() }
         let api = api.flatMap { $0.scheme?.lowercased() == "https" && $0.host != nil ? $0 : nil }
         var loaded = false
@@ -147,18 +167,23 @@ private struct Captivity: Decodable {
                 request.setValue("application/captive+json", forHTTPHeaderField: "Accept")
                 if let (http, data) = try? await response(request, session: session), http.statusCode == 200,
                    let state = try? JSONDecoder().decode(Captivity.self, from: data) {
-                    if !state.captive { finish() }
+                    if !state.captive { networkOpen() }
                     captive = true
                     if let portal = state.portal, portal.scheme?.lowercased() == "https", Self.webURL(portal) { loginURL = portal; advertised = true }
                 }
             }
             if !advertised, let (http, body) = try? await response(URLRequest(url: probeURL), session: session) {
                 let page = String(decoding: body, as: UTF8.self).lowercased().filter { !$0.isWhitespace }
-                if !captive && http.statusCode == 200 && page == "<html><head><title>success</title></head><body>success</body></html>" { finish() }
+                if !captive && http.statusCode == 200 && page == "<html><head><title>success</title></head><body>success</body></html>" { networkOpen() }
+                if http.statusCode == 511 || (http.statusCode == 200 && (page.contains("<html") || page.contains("<form"))) { captive = true }
                 if (300..<400).contains(http.statusCode), let redirect = http.value(forHTTPHeaderField: "Location"),
-                   let destination = URL(string: redirect, relativeTo: probeURL)?.absoluteURL, Self.webURL(destination) { loginURL = destination }
+                   let destination = URL(string: redirect, relativeTo: probeURL)?.absoluteURL, Self.webURL(destination) { loginURL = destination; captive = true }
             }
-            if !loaded { loaded = true; web.load(URLRequest(url: loginURL)) }
+            if browser == nil {
+                guard captive || !automatic else { exit(WiFiLoginResult.inconclusive.rawValue) }
+                showWindow(proxy)
+            }
+            if !loaded { loaded = true; browser?.load(URLRequest(url: loginURL)) }
             try? await Task.sleep(for: .seconds(5))
         }
     }
@@ -185,9 +210,11 @@ private struct Captivity: Decodable {
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo,
                  type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) { decisionHandler(.deny) }
 
+    private func networkOpen() -> Never { exit((browser == nil ? WiFiLoginResult.alreadyOpen : .signedIn).rawValue) }
+
     @objc private func doneClicked() { finish() }
-    private func finish() -> Never { exit(0) }
-    func windowWillClose(_ notification: Notification) { exit(1) }
+    private func finish() -> Never { exit(WiFiLoginResult.signedIn.rawValue) }
+    func windowWillClose(_ notification: Notification) { exit(WiFiLoginResult.cancelled.rawValue) }
 }
 
 let app = NSApplication.shared

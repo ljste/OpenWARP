@@ -13,6 +13,12 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var session = TunnelSession { [weak self] status in self?.render(status) }
     private var loginProcess: Process?
     private var loginInput: FileHandle?
+    private lazy var wifi = WiFiMonitor { [weak self] joined in self?.wifiChanged(joined) }
+    private var scheduledCheck: DispatchWorkItem?
+    private var failureAlert: NSAlert?
+    private var failureDetail = ""
+    private var checkedFailure = false
+    private var retryOnOpen = false
     private var state = "disconnected"
     private var pending: Task<Void, Never>?
 
@@ -62,6 +68,8 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        wifi.stop()
+        cancelCheck()
         stopWifiLogin()
         pending?.cancel()
         session.disconnect()
@@ -85,6 +93,9 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func manualDisconnect() {
         guard pauseProtection() else { return }
+        wifi.stop()
+        cancelCheck()
+        dismissFailure()
         stopWifiLogin()
         pending?.cancel()
         session.disconnect()
@@ -113,31 +124,77 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loginProcess = nil
     }
 
+    private func cancelCheck() {
+        scheduledCheck?.cancel()
+        scheduledCheck = nil
+    }
+
+    private func wifiChanged(_ joined: Bool) {
+        cancelCheck()
+        stopWifiLogin()
+        checkedFailure = false
+        retryOnOpen = state == "error"
+        if joined {
+            dismissFailure()
+            scheduleCheck(attempt: 0)
+        }
+    }
+
+    private func scheduleCheck(attempt: Int) {
+        guard wifi.joined, scheduledCheck == nil, loginProcess == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.scheduledCheck = nil
+            self.launchWifiLogin(detect: true, attempt: attempt)
+        }
+        scheduledCheck = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + [1.0, 4.0, 10.0][attempt], execute: work)
+    }
+
     @objc private func signInToWifi() {
+        cancelCheck()
         if let current = loginProcess, current.isRunning {
-            NSRunningApplication(processIdentifier: current.processIdentifier)?.activate(options: [])
+            try? loginInput?.write(contentsOf: Data([1]))
             return
         }
+        launchWifiLogin(detect: false, attempt: 0)
+    }
+
+    private func launchWifiLogin(detect: Bool, attempt: Int) {
         let process = Process()
         let reconnect = state != "disconnected" || KillSwitch.mode == .armed
         process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/WiFiLogin.app/Contents/MacOS/WiFiLogin")
+        process.arguments = detect ? ["--detect"] : []
         let input = Pipe()
         process.standardInput = input
         process.terminationHandler = { [weak self] finished in
             DispatchQueue.main.async {
                 guard let self, self.loginProcess === finished else { return }
                 self.stopWifiLogin()
-                if reconnect && finished.terminationStatus == 0 && self.state != "connected" {
+                let result = WiFiLoginResult(rawValue: finished.terminationStatus)
+                if result == .cancelled && detect { self.checkedFailure = true }
+                if detect && result == .inconclusive && attempt < 2 {
+                    self.scheduleCheck(attempt: attempt + 1)
+                } else if reconnect && self.state != "connected" && (result == .signedIn || (result == .alreadyOpen && self.retryOnOpen)) {
+                    self.retryOnOpen = false
                     self.session.disconnect()
                     self.start()
+                } else if self.state == "error" && (result == .alreadyOpen || result == .inconclusive) {
+                    self.showFailure()
                 }
             }
         }
         do {
+            guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
+                throw OpenWARPError("Could not set up Wi-Fi sign-in.")
+            }
             try process.run()
             loginProcess = process
             loginInput = input.fileHandleForWriting
-        } catch { NSAlert(error: error).runModal() }
+        } catch {
+            if !detect { NSAlert(error: error).runModal() }
+            else if state == "error" { showFailure() }
+        }
     }
 
     private func start() {
@@ -156,6 +213,7 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             default: return
             }
         }
+        wifi.start()
         render(TunnelStatus(state: "connecting", detail: "Preparing connection"))
         pending = Task { @MainActor in
             defer { pending = nil }
@@ -171,6 +229,7 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func render(_ status: TunnelStatus) {
+        let previous = state
         state = status.state
         let symbol: String
         let label: String
@@ -192,14 +251,35 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         detail.toolTip = text
         detail.isHidden = text.isEmpty
         toggle.title = state == "connected" || state == "reconnecting" ? "Disconnect" : state == "connecting" ? "Cancel" : "Connect"
-        if state == "error" && loginProcess == nil {
-            let alert = NSAlert()
-            alert.messageText = "OpenWARP could not connect"
-            alert.informativeText = status.detail + (KillSwitch.mode == .armed ? "\n\nThe kill switch is armed. Reconnect or choose Settings > Resume Ordinary Internet." : "")
-            alert.addButton(withTitle: "OK")
-            alert.addButton(withTitle: "Sign In to Wi-Fi…")
-            if alert.runModal() == .alertSecondButtonReturn { signInToWifi() }
+        if state == "connected" {
+            checkedFailure = false
+            retryOnOpen = false
+            dismissFailure()
+        } else if state == "error" || (state == "reconnecting" && previous == "connected") {
+            failureDetail = status.detail
+            if wifi.joined && !checkedFailure {
+                checkedFailure = true
+                scheduleCheck(attempt: 0)
+            } else if state == "error" && loginProcess == nil && scheduledCheck == nil {
+                showFailure()
+            }
         }
+    }
+
+    private func dismissFailure() {
+        if let failureAlert, NSApp.modalWindow === failureAlert.window { NSApp.abortModal() }
+    }
+
+    private func showFailure() {
+        guard failureAlert == nil else { return }
+        let alert = NSAlert()
+        failureAlert = alert
+        defer { failureAlert = nil }
+        alert.messageText = "OpenWARP could not connect"
+        alert.informativeText = failureDetail + (KillSwitch.mode == .armed ? "\n\nThe kill switch is armed. Reconnect or choose Settings > Resume Ordinary Internet." : "")
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Sign In to Wi-Fi…")
+        if alert.runModal() == .alertSecondButtonReturn { signInToWifi() }
     }
 
     @objc private func toggleLogin() {

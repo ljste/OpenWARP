@@ -14,7 +14,9 @@ Choose **Settings > Connect at Login** from the shield menu to start OpenWARP an
 
 ## Public Wi-Fi sign-in
 
-Join the Wi-Fi network and choose **Settings > Sign In to Wi-Fi…** from the shield menu. The same action is available in a connection-failure alert. Complete the hotspot’s form in the OpenWARP window. The window closes when its network check succeeds, and OpenWARP retries a failed connection. **Done** also requests a retry. Closing the window cancels sign-in. You can leave **Kill Switch** enabled throughout.
+With OpenWARP running and a connection requested, join the Wi-Fi network. If the hotspot requires sign-in, OpenWARP opens its login window automatically. Complete the form there. The window closes when the network grants access, and OpenWARP retries a failed tunnel connection. You can leave **Kill Switch** enabled throughout.
+
+OpenWARP checks Wi-Fi on connection, on a Wi-Fi network change, and when a working tunnel drops. It checks the hotspot’s advertised portal API or Apple’s HTTP connectivity page directly over Wi-Fi. Ordinary Wi-Fi stays quiet. If discovery is inconclusive, OpenWARP retries briefly. **Settings > Sign In to Wi-Fi…** lets you open the window yourself. **Done** requests a tunnel retry, and closing the window cancels sign-in. Choosing **Disconnect** stops automatic checks.
 
 The sign-in window uses a temporary WebKit data store and a password-protected local proxy. The proxy binds DNS and web connections to Wi-Fi. The hotspot and sites loaded inside the window see the Wi-Fi connection’s public address. With the kill switch armed, other apps continue through WARP or stay blocked. When necessary, the sign-in service temporarily adds an interface-scoped route and removes it when the session ends. With the kill switch off, other software that explicitly binds to Wi-Fi can also use that route. The sign-in processes exit when the window closes, the parent app quits, or the ten-minute session expires.
 

@@ -23,6 +23,7 @@ class PortalServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
     key: str
     signed_in: threading.Event
+    unavailable = False
 
 
 class Portal(socketserver.StreamRequestHandler):
@@ -53,7 +54,9 @@ class Portal(socketserver.StreamRequestHandler):
         status = b'200 OK'
         headers = b''
         if host == b'captive.apple.com':
-            if server.signed_in.is_set():
+            if server.unavailable:
+                status, body = b'503 Service Unavailable', b'<html>Temporarily offline</html>'
+            elif server.signed_in.is_set():
                 body = b'<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>'
             else:
                 status, headers, body = b'302 Found', b'Location: http://portal.example.test/login\r\n', b''
@@ -80,23 +83,33 @@ def main() -> None:
         (bundle / 'MacOS').mkdir(parents=True)
         (bundle / 'Info.plist').write_bytes((ROOT / 'WiFiLogin/Info.plist').read_bytes())
         executable = bundle / 'MacOS/WiFiLogin'
-        subprocess.run(['xcrun', 'swiftc', str(work / 'main.swift'), '-o', str(executable)], check=True)
+        subprocess.run(['xcrun', 'swiftc', str(work / 'main.swift'), str(ROOT / 'Shared/WiFiLoginResult.swift'), '-o', str(executable)], check=True)
         subprocess.run(['codesign', '-s', '-', str(bundle.parent)], check=True)
         with PortalServer(('127.0.0.1', 0), Portal) as proxy:
             proxy.signed_in = threading.Event()
             proxy.key = secrets.token_hex(32)
             threading.Thread(target=proxy.serve_forever, daemon=True).start()
-            with subprocess.Popen([str(executable)], stdin=subprocess.PIPE) as child:
-                try:
-                    with control.accept()[0] as channel:
-                        channel.sendall(json.dumps({'port': proxy.server_address[1], 'secret': proxy.key, 'api': ''}).encode() + b'\n')
-                        assert child.wait(timeout=35) == 0
-                        assert proxy.signed_in.is_set(), 'WebKit did not complete the sign-in form'
-                finally:
-                    if child.poll() is None:
-                        child.kill()
-                    proxy.shutdown()
-    print('Verified authenticated proxy, captive redirect, WebKit form POST and automatic completion.')
+            def run(arguments: list[str]) -> int:
+                with subprocess.Popen([str(executable), *arguments], stdin=subprocess.PIPE) as child:
+                    try:
+                        with control.accept()[0] as channel:
+                            channel.sendall(json.dumps({'port': proxy.server_address[1], 'secret': proxy.key, 'api': ''}).encode() + b'\n')
+                            return child.wait(timeout=35)
+                    finally:
+                        if child.poll() is None:
+                            child.kill()
+
+            try:
+                for arguments in [[], ['--detect']]:
+                    proxy.signed_in.clear()
+                    assert run(arguments) == 0
+                    assert proxy.signed_in.is_set(), 'WebKit did not complete the sign-in form'
+                assert run(['--detect']) == 2, 'Open Wi-Fi should exit without creating a window'
+                proxy.unavailable = True
+                assert run(['--detect']) == 3, 'An outage should stay quiet'
+            finally:
+                proxy.shutdown()
+    print('Verified manual and automatic sign-in, redirect, form submission, and quiet exits on open Wi-Fi and a network error.')
 
 
 if __name__ == '__main__':
