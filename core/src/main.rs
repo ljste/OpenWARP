@@ -1,8 +1,11 @@
 mod guard;
 mod identity;
 mod network;
+mod portal;
+mod portal_routes;
 mod probe;
 mod transport;
+mod wifi;
 
 use anyhow::{Context, Result, bail, ensure};
 use identity::Identity;
@@ -232,6 +235,18 @@ fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [] => activate(),
+        [cmd] if cmd == "wifi-login" => {
+            if let Err(error) = portal::supervise() {
+                println!("{}", serde_json::json!({"error":error.to_string()}));
+            }
+            Ok(())
+        }
+        [cmd] if cmd == "wifi-relay" => {
+            if let Err(error) = portal::run() {
+                println!("{}", serde_json::json!({"error":error.to_string()}));
+            }
+            Ok(())
+        }
         [cmd] if cmd == "guard-control" => guard::serve(listener()?.accept()?.0),
         [cmd, action] if cmd == "kill-switch" => guard::request(action),
         [command, path] if command == "probe-interface" => {

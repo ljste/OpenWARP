@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
-for service in io.github.ljste.openwarp.guard io.github.ljste.openwarp.tunnel; do
+if ! /usr/bin/dscl . -read /Groups/_openwarpportal PrimaryGroupID >/dev/null 2>&1; then
+    /usr/sbin/dseditgroup -o create -n . -r "OpenWARP Wi-Fi sign-in" _openwarpportal
+fi
+for service in io.github.ljste.openwarp.portal io.github.ljste.openwarp.guard io.github.ljste.openwarp.tunnel; do
     /bin/launchctl bootout "system/$service" 2>/dev/null || true
     attempts=0
     until /bin/launchctl bootstrap system "/Library/LaunchDaemons/$service.plist"; do

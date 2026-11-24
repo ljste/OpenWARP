@@ -13,6 +13,11 @@ trap 'rm -rf "$stage"' EXIT
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$stage/root/Applications" "$stage/root/Library/PrivilegedHelperTools" "$stage/root/Library/LaunchDaemons"
 cargo build --locked --release --manifest-path core/Cargo.toml
 xcrun swiftc -O -target "$arch-apple-macos14.0" App/*.swift -o "$app/Contents/MacOS/OpenWARP"
+loginApp="$app/Contents/Helpers/WiFiLogin.app"
+mkdir -p "$loginApp/Contents/MacOS"
+xcrun swiftc -O -target "$arch-apple-macos14.0" WiFiLogin/main.swift -o "$loginApp/Contents/MacOS/WiFiLogin"
+install -m 644 WiFiLogin/Info.plist "$loginApp/Contents/Info.plist"
+codesign --force --sign - --identifier io.github.ljste.openwarp.wifi-login "$loginApp"
 install -m 644 Packaging/Info.plist "$app/Contents/Info.plist"
 install -m 644 LICENSE "$app/Contents/Resources/LICENSE"
 target="$(rustc -vV | awk '/^host:/ {print $2}')"

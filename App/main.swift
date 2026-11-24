@@ -11,6 +11,8 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let killSwitch = NSMenuItem()
     private let resumeInternet = NSMenuItem()
     private lazy var session = TunnelSession { [weak self] status in self?.render(status) }
+    private var loginProcess: Process?
+    private var loginInput: FileHandle?
     private var state = "disconnected"
     private var pending: Task<Void, Never>?
 
@@ -37,6 +39,8 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         killSwitch.target = self
         killSwitch.action = #selector(toggleKillSwitch)
         settingsMenu.addItem(killSwitch)
+        let wifi = settingsMenu.addItem(withTitle: "Sign In to Wi-Fi…", action: #selector(signInToWifi), keyEquivalent: "")
+        wifi.target = self
         resumeInternet.title = "Resume Ordinary Internet"
         resumeInternet.target = self
         resumeInternet.action = #selector(manualDisconnect)
@@ -58,6 +62,7 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        stopWifiLogin()
         pending?.cancel()
         session.disconnect()
     }
@@ -80,6 +85,7 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func manualDisconnect() {
         guard pauseProtection() else { return }
+        stopWifiLogin()
         pending?.cancel()
         session.disconnect()
         render(TunnelStatus(state: "disconnected", detail: ""))
@@ -99,6 +105,39 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             NSAlert(error: error).runModal()
         }
+    }
+
+    private func stopWifiLogin() {
+        try? loginInput?.close()
+        loginInput = nil
+        loginProcess = nil
+    }
+
+    @objc private func signInToWifi() {
+        if let current = loginProcess, current.isRunning {
+            NSRunningApplication(processIdentifier: current.processIdentifier)?.activate(options: [])
+            return
+        }
+        let process = Process()
+        let reconnect = state != "disconnected" || KillSwitch.mode == .armed
+        process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/WiFiLogin.app/Contents/MacOS/WiFiLogin")
+        let input = Pipe()
+        process.standardInput = input
+        process.terminationHandler = { [weak self] finished in
+            DispatchQueue.main.async {
+                guard let self, self.loginProcess === finished else { return }
+                self.stopWifiLogin()
+                if reconnect && finished.terminationStatus == 0 && self.state != "connected" {
+                    self.session.disconnect()
+                    self.start()
+                }
+            }
+        }
+        do {
+            try process.run()
+            loginProcess = process
+            loginInput = input.fileHandleForWriting
+        } catch { NSAlert(error: error).runModal() }
     }
 
     private func start() {
@@ -153,11 +192,13 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         detail.toolTip = text
         detail.isHidden = text.isEmpty
         toggle.title = state == "connected" || state == "reconnecting" ? "Disconnect" : state == "connecting" ? "Cancel" : "Connect"
-        if state == "error" {
+        if state == "error" && loginProcess == nil {
             let alert = NSAlert()
             alert.messageText = "OpenWARP could not connect"
             alert.informativeText = status.detail + (KillSwitch.mode == .armed ? "\n\nThe kill switch is armed. Reconnect or choose Settings > Resume Ordinary Internet." : "")
-            alert.runModal()
+            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: "Sign In to Wi-Fi…")
+            if alert.runModal() == .alertSecondButtonReturn { signInToWifi() }
         }
     }
 

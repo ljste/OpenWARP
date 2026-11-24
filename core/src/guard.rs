@@ -132,6 +132,15 @@ fn pf(args: &[&str], rules: Option<&str>) -> Result<String> {
 
 fn rules(link: Option<&Link>) -> Result<String> {
     let mut text = String::from("pass quick on lo0 all no state\n");
+    let ports = crate::wifi::WEB_PORTS
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    text += &format!(
+        "pass out quick proto tcp to any port {{ {ports} }} user nobody group _openwarpportal keep state (if-bound)\n"
+    );
+    text += "pass out quick proto { tcp, udp } to any port 53 user nobody group _openwarpportal keep state (if-bound)\n";
     if let Some(link) = link {
         if let Some(name) = &link.interface {
             ensure!(

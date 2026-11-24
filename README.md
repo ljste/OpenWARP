@@ -12,6 +12,14 @@ On one M2 Pro Mac, the connected menu used about 19 MB and the helper used 3.3 M
 
 Choose **Settings > Connect at Login** from the shield menu to start OpenWARP and connect automatically when you log in. Choosing **Disconnect** or **Quit OpenWARP** in the menu releases the tunnel and allows ordinary networking. Installing the helper requires administrator approval. The helper accepts local connections from members of the Mac's admin group.
 
+## Public Wi-Fi sign-in
+
+Join the Wi-Fi network and choose **Settings > Sign In to Wi-Fi…** from the shield menu. The same action is available in a connection-failure alert. Complete the hotspot’s form in the OpenWARP window. The window closes when its network check succeeds, and OpenWARP retries a failed connection. **Done** also requests a retry. Closing the window cancels sign-in. You can leave **Kill Switch** enabled throughout.
+
+The sign-in window uses a temporary WebKit data store and a password-protected local proxy. The proxy binds DNS and web connections to Wi-Fi. The hotspot and sites loaded inside the window see the Wi-Fi connection’s public address. With the kill switch armed, other apps continue through WARP or stay blocked. When necessary, the sign-in service temporarily adds an interface-scoped route and removes it when the session ends. With the kill switch off, other software that explicitly binds to Wi-Fi can also use that route. The sign-in processes exit when the window closes, the parent app quits, or the ten-minute session expires.
+
+OpenWARP supports intercepted HTTP sign-in pages and HTTPS captive-portal APIs advertised through DHCPv4 option 114. The window checks Apple’s captive-network test page when an advertised portal is unavailable. The proxy supports HTTP and HTTPS on ports 80, 443, 8000, 8080, 8443, 8843, and 8880. Portals requiring external apps, other ports, or interactive certificate exceptions may need a different sign-in method.
+
 ## Kill switch
 
 **Settings > Kill Switch** is off on a fresh installation. Enable it while connected to arm it immediately, or while disconnected to arm it on the next connection. The setting applies to the whole Mac. Turning it on can interrupt existing connections because OpenWARP clears existing packet-filter states when arming.
@@ -24,7 +32,7 @@ Choose **Settings > Connect at Login** from the shield menu to start OpenWARP an
 | Restart after a deliberate disconnect | Ordinary Internet access continues until the next connection, including a connection started by **Connect at Login**. |
 | Want Internet access after a failure | Select **Settings > Resume Ordinary Internet** to pause protection, or uncheck **Kill Switch** to turn it off. |
 
-The switch uses a dedicated anchor in the standard macOS packet filter (PF). While armed it also blocks ordinary LAN and captive-portal traffic. Exceptions cover loopback, the tunnel, UDP to the registered WARP endpoints for the root helper, and DHCP and IPv6 neighbor discovery for network setup. Boot-time protection starts when launchd restores the filter. Traffic before that point, external changes to PF, and third-party or customized firewall configurations are outside its guarantee.
+The switch uses a dedicated anchor in the standard macOS packet filter (PF). While armed it also blocks ordinary LAN traffic. Exceptions cover loopback, the tunnel, UDP to the registered WARP endpoints for the root helper, the dedicated Wi-Fi sign-in service, and DHCP and IPv6 neighbor discovery for network setup. Boot-time protection starts when launchd restores the filter. Traffic before that point, external changes to PF, and third-party or customized firewall configurations are outside its guarantee.
 
 For recovery from Terminal, a local Mac administrator can turn the setting off using the installed control service, even while the menu app is closed.
 
@@ -66,11 +74,14 @@ The check reads the active tunnel interface and DNS configuration, inspects IPv4
 Uncheck **Settings > Kill Switch** and **Settings > Connect at Login**, then quit OpenWARP. Remove the services and their installer receipt.
 
 ```sh
+sudo launchctl bootout system/io.github.ljste.openwarp.portal
 sudo launchctl bootout system/io.github.ljste.openwarp.guard
 sudo launchctl bootout system/io.github.ljste.openwarp.tunnel
+sudo rm -f /Library/LaunchDaemons/io.github.ljste.openwarp.portal.plist
 sudo rm -f /Library/LaunchDaemons/io.github.ljste.openwarp.guard.plist
 sudo rm -f /Library/LaunchDaemons/io.github.ljste.openwarp.tunnel.plist
 sudo rm -f /Library/PrivilegedHelperTools/io.github.ljste.openwarp.tunnel
+sudo dseditgroup -o delete -n . _openwarpportal
 sudo pkgutil --forget io.github.ljste.openwarp.pkg
 ```
 
