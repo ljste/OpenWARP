@@ -1,14 +1,13 @@
-use crate::{identity::Identity, network::ready, transport::Tunnel};
-use anyhow::{Result, ensure};
+use crate::{control::Control, identity::Identity, transport::Tunnel};
+use anyhow::{Context, Result};
 use boring::rand::rand_bytes;
 use etherparse::{PacketBuilder, SlicedPacket, TransportSlice};
 use std::{
     net::Ipv6Addr,
-    os::fd::RawFd,
     time::{Duration, Instant},
 };
 
-pub fn verify(tunnel: &mut Tunnel, id: &Identity, control: RawFd) -> Result<()> {
+pub fn verify(tunnel: &mut Tunnel, id: &Identity, control: &mut Control<'_>) -> Result<()> {
     let mut random = [0; 4];
     rand_bytes(&mut random)?;
     let tx = &random[..2];
@@ -35,13 +34,14 @@ pub fn verify(tunnel: &mut Tunnel, id: &Identity, control: RawFd) -> Result<()> 
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
             tunnel.flush()?;
-            let events = ready(
-                &[tunnel.fd(), control],
-                tunnel
-                    .timeout()
-                    .min(deadline.saturating_duration_since(Instant::now())),
-            )?;
-            ensure!(!events[1], "Disconnected");
+            let events = control
+                .wait(
+                    &[tunnel.fd()],
+                    tunnel
+                        .timeout()
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                )?
+                .context("Disconnected")?;
             tunnel.advance(events[0])?;
             tunnel.receive(|bytes| {
                 let Ok(packet) = SlicedPacket::from_ip(bytes) else {
