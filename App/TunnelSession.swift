@@ -4,14 +4,11 @@ import Foundation
 struct TunnelStatus: Decodable {
     let state: String
     let detail: String
-    var supportsP2P: Bool? = nil
 }
 
 final class TunnelSession {
     private var handle: FileHandle?
     private var reader: DispatchSourceRead?
-    private var supportsP2P: Bool?
-    private var sentP2P = false
     private var pending = Data()
     private let update: (TunnelStatus) -> Void
     var active: Bool { handle != nil }
@@ -58,16 +55,7 @@ final class TunnelSession {
         reader?.cancel()
         reader = nil
         handle = nil
-        supportsP2P = nil
-        sentP2P = false
         pending.removeAll()
-    }
-
-    func setP2P(_ enabled: Bool) throws {
-        guard let handle, let supportsP2P, sentP2P != enabled else { return }
-        guard supportsP2P else { throw OpenWARPError("Update the OpenWARP tunnel helper to use P2P Mode.") }
-        try handle.write(contentsOf: Data(enabled ? [0x31] : [0x30]))
-        sentP2P = enabled
     }
 
     private func readStatus() {
@@ -85,7 +73,6 @@ final class TunnelSession {
             let status = try? JSONDecoder().decode(TunnelStatus.self, from: line)
             pending.removeSubrange(...end)
             guard let status else { continue }
-            if status.state == "connected" { supportsP2P = status.supportsP2P ?? false }
             if status.state == "error" { disconnect() }
             update(status)
         }

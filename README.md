@@ -12,14 +12,6 @@ On one M2 Pro Mac, the connected menu used about 19 MB and the helper used 3.3 M
 
 Choose **Settings > Connect at Login** from the shield menu to start OpenWARP and connect automatically when you log in. Choosing **Disconnect** or **Quit OpenWARP** in the menu releases the tunnel and allows ordinary networking. Installing the helper requires administrator approval. The helper accepts local connections from members of the Mac's admin group.
 
-## P2P downloads
-
-Turn on **Settings > P2P Mode** for a torrent or another download with many peers. It applies to the active WARP tunnel immediately and remembers your choice for future connections. The setting is off on a fresh installation.
-
-P2P Mode gives the tunnel's UDP socket a larger receive buffer for bursts, up to 4 MiB when macOS allows it. It also waits for space in the outgoing QUIC datagram queue before reading more packets from the virtual interface. These settings apply to traffic sharing the tunnel. Switching modes keeps the current connection, routes, DNS, and kill-switch rules in place.
-
-Download speed still depends on the swarm, your connection, and Cloudflare's path to the peers. The mode does not provide an inbound port for seeding.
-
 ## Public Wi-Fi sign-in
 
 With OpenWARP running and a connection requested, join the Wi-Fi network. If the hotspot requires sign-in, OpenWARP opens its login window automatically. Complete the form there. The window closes when the network grants access, and OpenWARP retries a failed tunnel connection. You can leave **Kill Switch** enabled throughout.

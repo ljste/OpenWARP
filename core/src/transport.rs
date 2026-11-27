@@ -1,8 +1,10 @@
-use crate::{control::Control, identity::Identity, network::physical_socket};
+use crate::{
+    identity::Identity,
+    network::{physical_socket, ready},
+};
 use anyhow::{Context, Result, bail, ensure};
 use boring::rand::rand_bytes;
 use quiche::h3::{self, Header, NameValue};
-use socket2::SockRef;
 use std::{
     io,
     net::{IpAddr, SocketAddr, UdpSocket},
@@ -12,8 +14,6 @@ use std::{
 
 pub struct Tunnel {
     socket: UdpSocket,
-    default_receive_buffer: usize,
-    p2p: bool,
     local: SocketAddr,
     remote: SocketAddr,
     conn: quiche::Connection,
@@ -23,11 +23,11 @@ pub struct Tunnel {
 }
 
 impl Tunnel {
-    pub fn dial(id: &Identity, control: &mut Control<'_>) -> Result<Self> {
+    pub fn dial(id: &Identity, control: RawFd) -> Result<Self> {
         let endpoints = [IpAddr::V4(id.endpoint4), IpAddr::V6(id.endpoint6)];
         let mut errors = Vec::new();
         for edge in endpoints {
-            if control.wait(&[], Duration::ZERO)?.is_none() {
+            if control >= 0 && ready(&[control], Duration::ZERO)?[0] {
                 bail!("Disconnected");
             }
             match Self::open(id, edge, control) {
@@ -38,7 +38,7 @@ impl Tunnel {
         bail!("WARP handshake failed. {}", errors.join("; "))
     }
 
-    fn open(id: &Identity, edge: IpAddr, control: &mut Control<'_>) -> Result<Self> {
+    fn open(id: &Identity, edge: IpAddr, control: RawFd) -> Result<Self> {
         let socket = physical_socket(edge)?;
         let local = socket.local_addr()?;
         let remote = socket.peer_addr()?;
@@ -53,8 +53,6 @@ impl Tunnel {
             &mut cfg,
         )?;
         let mut peer = Self {
-            default_receive_buffer: SockRef::from(&socket).recv_buffer_size()?,
-            p2p: false,
             socket,
             local,
             remote,
@@ -68,9 +66,8 @@ impl Tunnel {
             peer.flush()?;
             let remaining = deadline.saturating_duration_since(Instant::now());
             ensure!(!remaining.is_zero(), "Timed out waiting for Cloudflare");
-            let events = control
-                .wait(&[peer.fd()], remaining.min(peer.timeout()))?
-                .context("Disconnected")?;
+            let events = ready(&[peer.fd(), control], remaining.min(peer.timeout()))?;
+            ensure!(!events[1], "Disconnected");
             peer.advance(events[0])?;
         }
         ensure!(
@@ -78,30 +75,6 @@ impl Tunnel {
             "MASQUE datagram size cannot carry IPv6 MTU"
         );
         Ok(peer)
-    }
-
-    pub fn set_p2p(&mut self, enabled: bool) -> Result<()> {
-        if self.p2p == enabled {
-            return Ok(());
-        }
-        let socket = SockRef::from(&self.socket);
-        if enabled {
-            // Respect the host's socket limit and keep its default if it is already larger.
-            for size in [4 << 20, 2 << 20, 1 << 20] {
-                if size <= self.default_receive_buffer || socket.set_recv_buffer_size(size).is_ok()
-                {
-                    break;
-                }
-            }
-        } else {
-            socket.set_recv_buffer_size(self.default_receive_buffer)?;
-        }
-        self.p2p = enabled;
-        Ok(())
-    }
-
-    pub fn accepts_packet(&self) -> bool {
-        !self.p2p || !self.conn.is_dgram_send_queue_full()
     }
 
     pub fn fd(&self) -> RawFd {

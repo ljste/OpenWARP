@@ -10,8 +10,6 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let manualSignIn = NSMenuItem(title: "Sign In to Wi-Fi…", action: #selector(signInToWifi), keyEquivalent: "")
     private let login = NSMenuItem()
     private let killSwitch = NSMenuItem()
-    private let p2p = NSMenuItem()
-    private var p2pEnabled: Bool { UserDefaults.standard.bool(forKey: "p2pMode") }
     private let resumeInternet = NSMenuItem()
     private lazy var session = TunnelSession { [weak self] status in self?.render(status) }
     private var loginProcess: Process?
@@ -51,11 +49,6 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         killSwitch.target = self
         killSwitch.action = #selector(toggleKillSwitch)
         settingsMenu.addItem(killSwitch)
-        p2p.title = "P2P Mode"
-        p2p.toolTip = "Allow more buffering for bursts from multiple peers. Changes apply to the current tunnel."
-        p2p.target = self
-        p2p.action = #selector(toggleP2P)
-        settingsMenu.addItem(p2p)
         resumeInternet.title = "Resume Ordinary Internet"
         resumeInternet.target = self
         resumeInternet.action = #selector(manualDisconnect)
@@ -70,7 +63,6 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        p2p.state = p2pEnabled ? .on : .off
         let mode = KillSwitch.mode
         killSwitch.state = mode == nil ? .mixed : mode == .off ? .off : .on
         resumeInternet.isHidden = mode != .armed || session.active
@@ -124,17 +116,6 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else {
                 try KillSwitch.apply("disable")
             }
-        } catch {
-            NSAlert(error: error).runModal()
-        }
-    }
-
-    @objc private func toggleP2P() {
-        let enabled = !p2pEnabled
-        do {
-            try session.setP2P(enabled)
-            UserDefaults.standard.set(enabled, forKey: "p2pMode")
-            p2p.state = enabled ? .on : .off
         } catch {
             NSAlert(error: error).runModal()
         }
@@ -284,7 +265,6 @@ final class OpenWARPApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         detail.isHidden = text.isEmpty
         toggle.title = state == "connected" || state == "reconnecting" ? "Disconnect" : state == "connecting" ? "Cancel" : "Connect"
         if state == "connected" {
-            do { try session.setP2P(p2pEnabled) } catch { NSAlert(error: error).runModal() }
             checkedFailure = false
             retryOnOpen = false
             if previous != state { manualSignIn.isHidden = true }

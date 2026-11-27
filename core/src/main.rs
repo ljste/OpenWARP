@@ -1,4 +1,3 @@
-mod control;
 mod guard;
 mod identity;
 mod network;
@@ -9,9 +8,8 @@ mod transport;
 mod wifi;
 
 use anyhow::{Context, Result, bail, ensure};
-use control::Control;
 use identity::Identity;
-use network::Network;
+use network::{Network, ready};
 use std::{
     ffi::c_int,
     fs,
@@ -30,10 +28,10 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-fn report(mut peer: &UnixStream, state: &str, detail: &str) -> Result<()> {
+fn report(peer: &mut UnixStream, state: &str, detail: &str) -> Result<()> {
     serde_json::to_writer(
-        &mut peer,
-        &serde_json::json!({"state":state,"detail":detail,"supportsP2P":true}),
+        &mut *peer,
+        &serde_json::json!({"state":state,"detail":detail}),
     )?;
     peer.write_all(b"\n")?;
     Ok(())
@@ -42,7 +40,7 @@ fn report(mut peer: &UnixStream, state: &str, detail: &str) -> Result<()> {
 fn forward(
     tunnel: &mut Tunnel,
     network: &Network,
-    control: &mut Control<'_>,
+    peer: &UnixStream,
     until: Option<&std::sync::mpsc::Receiver<Result<()>>>,
 ) -> Result<()> {
     let mut frame = [0u8; 1282];
@@ -56,24 +54,18 @@ fn forward(
                 )
             });
         }
-        tunnel.set_p2p(control.p2p)?;
         tunnel.flush()?;
-        let device_fd = if tunnel.accepts_packet() {
-            network.device.as_raw_fd()
-        } else {
-            -1
-        };
-        let Some(events) = control.wait(
-            &[tunnel.fd(), device_fd],
+        let events = ready(
+            &[tunnel.fd(), network.device.as_raw_fd(), peer.as_raw_fd()],
             if until.is_some() {
                 tunnel.timeout().min(Duration::from_millis(100))
             } else {
                 tunnel.timeout()
             },
-        )?
-        else {
+        )?;
+        if events[2] {
             return Ok(());
-        };
+        }
         tunnel.advance(events[0])?;
         tunnel.receive(|ip| match network.device.send(ip) {
             Ok(_) => {
@@ -90,9 +82,6 @@ fn forward(
                     Ok(size) => {
                         counts[0] += 1;
                         tunnel.send(&frame[..size + 2])?;
-                        if !tunnel.accepts_packet() {
-                            break;
-                        }
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                     Err(e) => return Err(e.into()),
@@ -105,7 +94,7 @@ fn forward(
 fn verify_interface(
     tunnel: &mut Tunnel,
     network: &Network,
-    control: &mut Control<'_>,
+    peer: &UnixStream,
     addresses: [&'static str; 2],
 ) -> Result<()> {
     let (send, receive) = std::sync::mpsc::channel();
@@ -144,15 +133,18 @@ fn verify_interface(
         };
         let _ = send.send(check());
     });
-    forward(tunnel, network, control, Some(&receive))?;
-    ensure!(control.wait(&[], Duration::ZERO)?.is_some(), "Disconnected");
+    forward(tunnel, network, peer, Some(&receive))?;
+    ensure!(
+        !ready(&[peer.as_raw_fd()], Duration::ZERO)?[0],
+        "Disconnected"
+    );
     Ok(())
 }
 
-fn serve(peer: &UnixStream) -> Result<()> {
+fn serve(peer: &mut UnixStream) -> Result<()> {
     peer.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut line = Vec::new();
-    BufReader::new(peer)
+    BufReader::new(&*peer)
         .take(8193)
         .read_until(b'\n', &mut line)?;
     ensure!(
@@ -161,46 +153,46 @@ fn serve(peer: &UnixStream) -> Result<()> {
     );
     let id: Identity = serde_json::from_slice(&line)?;
     id.validate()?;
-    let mut control = Control::new(Some(peer));
+    let fd = peer.as_raw_fd();
     report(peer, "connecting", "Opening WARP tunnel")?;
     guard::Link::update(&id, None)?;
     Network::check_conflicts()?;
-    let mut tunnel = Tunnel::dial(&id, &mut control)?;
-    probe::verify(&mut tunnel, &id, &mut control)?;
+    let mut tunnel = Tunnel::dial(&id, fd)?;
+    probe::verify(&mut tunnel, &id, fd)?;
     let mut network = Network::prepare(&id)?;
     guard::Link::update(&id, Some(&network.name))?;
     verify_interface(
         &mut tunnel,
         &network,
-        &mut control,
+        peer,
         ["1.0.0.1", "[2606:4700:4700::1001]"],
     )?;
     network.claim(&id)?;
     verify_interface(
         &mut tunnel,
         &network,
-        &mut control,
+        peer,
         ["1.1.1.1", "[2606:4700:4700::1111]"],
     )?;
     loop {
         report(peer, "connected", &network.name)?;
-        match forward(&mut tunnel, &network, &mut control, None) {
+        match forward(&mut tunnel, &network, peer, None) {
             Ok(()) => return Ok(()),
             Err(error) => report(peer, "reconnecting", &error.to_string())?,
         }
         drop(tunnel);
         let mut delay = Duration::from_secs(1);
         loop {
-            if control.wait(&[], delay)?.is_none() {
+            if ready(&[fd], delay)?[0] {
                 return Ok(());
             }
-            match Tunnel::dial(&id, &mut control).and_then(|mut candidate| {
-                probe::verify(&mut candidate, &id, &mut control)?;
+            match Tunnel::dial(&id, fd).and_then(|mut candidate| {
+                probe::verify(&mut candidate, &id, fd)?;
                 network.verify_capture()?;
                 verify_interface(
                     &mut candidate,
                     &network,
-                    &mut control,
+                    peer,
                     ["1.1.1.1", "[2606:4700:4700::1111]"],
                 )?;
                 Ok(candidate)
@@ -232,9 +224,9 @@ fn listener() -> Result<UnixListener> {
 
 fn activate() -> Result<()> {
     guard::restore()?;
-    let (peer, _) = listener()?.accept()?;
-    if let Err(error) = serve(&peer) {
-        let _ = report(&peer, "error", &format!("{error:#}"));
+    let (mut peer, _) = listener()?.accept()?;
+    if let Err(error) = serve(&mut peer) {
+        let _ = report(&mut peer, "error", &format!("{error:#}"));
     }
     Ok(())
 }
@@ -260,13 +252,13 @@ fn main() -> Result<()> {
         [command, path] if command == "probe-interface" => {
             let data = fs::read(path)?;
             let id = serde_json::from_slice(&data)?;
-            let mut control = Control::new(None);
-            let mut tunnel = Tunnel::dial(&id, &mut control)?;
+            let mut tunnel = Tunnel::dial(&id, -1)?;
             let network = Network::prepare(&id)?;
+            let (peer, _other) = UnixStream::pair()?;
             verify_interface(
                 &mut tunnel,
                 &network,
-                &mut control,
+                &peer,
                 ["1.0.0.1", "[2606:4700:4700::1001]"],
             )?;
             println!("Verified IPv4 and IPv6 HTTPS over {}.", network.name);
@@ -275,9 +267,8 @@ fn main() -> Result<()> {
         [command, path] if command == "probe" => {
             let data = fs::read(path).context("Read OpenWARP enrollment")?;
             let id = serde_json::from_slice(&data)?;
-            let mut control = Control::new(None);
-            let mut tunnel = Tunnel::dial(&id, &mut control)?;
-            probe::verify(&mut tunnel, &id, &mut control)?;
+            let mut tunnel = Tunnel::dial(&id, -1)?;
+            probe::verify(&mut tunnel, &id, -1)?;
             println!(
                 "WARP CONNECT-IP verified: TLS 1.3, P256Kyber768Draft00, pinned peer, IPv4 and IPv6 DNS answers."
             );
